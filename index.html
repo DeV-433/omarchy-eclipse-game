@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eclipse</title>
+<meta name="description" content="Orbit a dying star: hop rings, dodge comets, outrun its flares">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--background); color: var(--foreground); font-family: ui-monospace, "JetBrainsMono Nerd Font", monospace; }
+  canvas { display: block; }
+  #hud { position: fixed; inset: 16px 20px auto 20px; display: flex; justify-content: space-between; font-size: 20px; pointer-events: none; }
+  .screen { position: fixed; inset: 0; display: none; place-items: center; text-align: center; pointer-events: none; background: color-mix(in srgb, var(--background) 45%, transparent); }
+  .screen.show { display: grid; }
+  .screen > div { padding: 28px 44px; border-radius: 14px; background: color-mix(in srgb, var(--background) 88%, transparent); border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent); }
+  .screen button, .screen [data-click] { pointer-events: auto; }
+  .screen h1 { margin: 0 0 16px; font-size: 64px; letter-spacing: 4px; color: var(--accent); }
+  .screen p { margin: 8px 0; font-size: 18px; }
+  .key { color: var(--accent); }
+  .dim { color: color-mix(in srgb, var(--foreground) 55%, var(--background)); }
+  #help table { margin: 12px auto; border-spacing: 20px 6px; font-size: 18px; text-align: left; }
+  #hud { align-items: center; }
+  #score { font-size: 26px; color: var(--accent); display: inline-block; }
+  #score.bump { animation: bump .25s ease-out; }
+  @keyframes bump { 50% { transform: scale(1.3); } }
+  #mid { display: flex; gap: 22px; align-items: center; }
+  #combo { color: var(--yellow); min-width: 3ch; }
+  .pip { display: inline-block; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--accent); margin: 0 3px; vertical-align: middle; }
+  .pip.on { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  #banner { position: fixed; top: 18%; left: 0; right: 0; text-align: center; font-size: 38px; letter-spacing: 8px; color: var(--accent); opacity: 0; pointer-events: none; }
+  #banner.pop { animation: pop 1.6s ease-out; }
+  #banner.warn { color: var(--red); }
+  @keyframes pop { 0% { opacity: 0; transform: scale(.8); } 15% { opacity: 1; transform: scale(1.06); } 70% { opacity: 1; transform: scale(1); } 100% { opacity: 0; } }
+</style>
+<!-- One pinned three.js version. Addons, if any, come from the same version. -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud"><span id="score">0</span><span id="mid"><span id="level" class="dim">LV 1</span><span id="combo"></span><span id="charges"></span></span><span class="dim">BEST <span id="best">—</span></span></div>
+<div id="banner"></div>
+
+<div id="title" class="screen show"><div>
+  <h1>ECLIPSE</h1>
+  <p>Orbit the dying star. Hop between rings, dodge comets, outrun its flares.</p>
+  <p>Gather light to build your combo and charge your <span class="key">phase</span>.</p>
+  <p><span class="key">↑ ↓</span> hop rings · <span class="key">← →</span> brake, boost · <span class="key">Space</span> phase</p>
+  <p class="dim">Space to start · ? for all controls</p>
+</div></div>
+
+<div id="paused" class="screen"><div>
+  <h1>PAUSED</h1>
+  <p>Press <span class="key">Esc</span> to resume</p>
+  <p class="leave">Press <span class="key">Q</span> to go back to Game Vibes</p>
+</div></div>
+
+<div id="over" class="screen"><div>
+  <h1 id="over-title">GAME OVER</h1>
+  <p id="over-detail"></p>
+  <p id="over-best" class="key"></p>
+  <p>Press <span class="key">Space</span> to play again</p>
+</div></div>
+
+<div id="help" class="screen"><div>
+  <h1>CONTROLS</h1>
+  <table>
+    <tr><td class="key">↑ / W</td><td>Hop out to the next ring</td></tr>
+    <tr><td class="key">↓ / S</td><td>Hop in to the next ring</td></tr>
+    <tr><td class="key">← / A</td><td>Brake your orbit</td></tr>
+    <tr><td class="key">→ / D</td><td>Boost your orbit</td></tr>
+    <tr><td class="key">Space</td><td>Phase through danger (uses a charge) · start</td></tr>
+    <tr><td class="key"></td><td class="dim">Every 4 motes of light earns a charge, up to 3</td></tr>
+    <tr><td class="key">Esc / P</td><td>Pause, resume, back to all games</td></tr>
+    <tr><td class="key">M</td><td>Sound on or off</td></tr>
+    <tr><td class="key">?</td><td>This help</td></tr>
+  </table>
+  <p class="dim">Press any key to close</p>
+</div></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// =============================================================================
+// SETTINGS — change these.
+// NAME namespaces saved data. PALETTE is the desktop's theme, which Game Vibes hands the game
+// as it opens; the colours written here only stand in without one, so leave them and take
+// every colour in the game from PALETTE.
+// =============================================================================
+const NAME = 'eclipse';
+const PALETTE = themed({
+  mode: 'dark',
+  background: '#1a1b26', foreground: '#a9b1d6', accent: '#7aa2f7', muted: '#414868',
+  red: '#f7768e', green: '#9ece6a', yellow: '#e0af68', blue: '#7aa2f7', magenta: '#ad8ee6', cyan: '#449dab', orange: '#eb927b',
+});
+const BEST_IS = 'higher';                 // 'lower' for times and move counts: then only a won round can set it
+const formatScore = value => Math.floor(value).toLocaleString();
+const KEY_REPEAT = false;                 // true: a held move key repeats, for cursors on boards and cards
+
+// =============================================================================
+// THE FRAME, PART ONE: what the game builds on. Keep it; change only ACTIONS, the camera,
+// the lights and the fog. The game may use: renderer, scene, camera, sun, fitCamera, saved,
+// random, isHeld, wasPressed, pointer, wasClicked, pick, pickPlane, sound, noise,
+// score, best, state, shake, $. Names starting with _ are the frame's alone.
+// =============================================================================
+
+// omarchy-games-vibes-launch opens the game as index.html#palette=<the current theme as JSON>, and
+// `omarchy agent look page --theme` does the same for another theme. #seed=1 replays the same round.
+function launchParam(name) {
+  return new URLSearchParams(location.hash.slice(1)).get(name);
+}
+
+function themed(fallback) {
+  let current = {};
+  try { current = JSON.parse(launchParam('palette') ?? '{}'); } catch {}
+  const palette = { ...fallback };
+  for (const key of Object.keys(fallback)) {
+    const value = current[key];
+    if (key === 'mode' ? value === 'light' || value === 'dark' : /^#[0-9a-f]{6}$/i.test(value ?? '')) palette[key] = value;
+  }
+  return palette;
+}
+
+for (const [key, value] of Object.entries(PALETTE)) document.documentElement.style.setProperty(`--${key}`, value);
+
+// Saved data. Storage can fail or hold junk; the game must still run.
+const saved = {
+  get(key, fallback) { try { const v = JSON.parse(localStorage.getItem(`omarchy-game:${NAME}:${key}`)); return v ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(`omarchy-game:${NAME}:${key}`, JSON.stringify(value)); } catch {} },
+};
+
+// Seeded randomness, so #seed=1 plays the same round on every run.
+let _seed = Number(launchParam('seed') ?? Date.now()) >>> 0;
+function random() {
+  _seed = (_seed + 0x6d2b79f5) >>> 0;
+  let t = Math.imul(_seed ^ (_seed >>> 15), _seed | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+// Without WebGL nothing can draw, so say so in the window rather than show a title screen that never starts.
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+} catch (error) {
+  for (const screen of document.querySelectorAll('.screen, #hud')) screen.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="screen show"><div><h1>NO 3D</h1><p>This game needs WebGL, and the browser could not start it on this computer.</p><p class="dim"></p></div></div>');
+  document.querySelector('.screen .dim').textContent = error.message;
+  throw error;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PALETTE.background);
+scene.fog = null;   // a top-down sky needs no fog
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+
+// Lit this way, a MeshStandardMaterial shows close to its PALETTE colour in dark and light themes alike.
+const _light = PALETTE.mode === 'light';
+scene.add(new THREE.HemisphereLight('#ffffff', PALETTE.background, _light ? 0.7 : 0.9));
+const sun = new THREE.DirectionalLight('#ffffff', _light ? 1.2 : 1.5);
+sun.position.set(6, 15, 8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -20, right: 20, top: 20, bottom: -20, near: 1, far: 50 });
+scene.add(sun);
+
+// Aim the camera down at a width × depth area around target, tilted from the horizontal, and back it
+// off until all four corners of the area are inside the window with a margin. Call it from resized().
+function fitCamera(width, depth, { tilt = 0.9, target = [0, 0, 0], margin = 0.9 } = {}) {
+  const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([x, z]) => new THREE.Vector3(target[0] + x * width / 2, target[1], target[2] + z * depth / 2));
+  const place = distance => {
+    camera.position.set(target[0], target[1] + distance * Math.sin(tilt), target[2] + distance * Math.cos(tilt));
+    camera.lookAt(...target);
+    camera.updateMatrixWorld();
+  };
+  const fits = () => corners.every(corner => {
+    if (corner.clone().applyMatrix4(camera.matrixWorldInverse).z >= 0) return false;   // behind the camera
+    const p = corner.clone().project(camera);
+    return Math.abs(p.x) <= margin && Math.abs(p.y) <= margin;
+  });
+  let near = 0.5, far = 1000;
+  for (let i = 0; i < 40; i++) {
+    const distance = (near + far) / 2;
+    place(distance);
+    if (fits()) far = distance; else near = distance;
+  }
+  place(far);
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  if (typeof resized === 'function') resized();
+});
+
+// Keys. isHeld() is what is down now. wasPressed() is what went down since it was last asked: once per
+// frame for the screens, and once per simulation step inside update(), so a press is never lost or doubled.
+const ACTIONS = {
+  left: ['ArrowLeft', 'KeyA'], right: ['ArrowRight', 'KeyD'], up: ['ArrowUp', 'KeyW'], down: ['ArrowDown', 'KeyS'],
+  action: ['Space', 'Enter'], pause: ['Escape', 'KeyP'], leave: ['KeyQ'], mute: ['KeyM'], help: ['Slash'],
+};
+const _held = new Set(), _pressed = new Set(), _stepPressed = new Set();
+let _inStep = false;
+const isHeld = action => ACTIONS[action].some(code => _held.has(code));
+const wasPressed = action => ACTIONS[action].some(code => (_inStep ? _stepPressed : _pressed).has(code));
+addEventListener('keydown', event => {
+  if (Object.values(ACTIONS).flat().includes(event.code)) event.preventDefault();
+  const moving = ['left', 'right', 'up', 'down'].some(action => ACTIONS[action].includes(event.code));
+  if (!event.repeat || (KEY_REPEAT && moving)) { _pressed.add(event.code); _stepPressed.add(event.code); }
+  _held.add(event.code);
+  _unlockSound();
+});
+addEventListener('keyup', event => _held.delete(event.code));
+addEventListener('blur', () => { _held.clear(); if (state === 'playing') show('paused'); });
+
+// The mouse, for games that want it. pointer.x/y run -1..1 across the window; wasClicked(button) works
+// like wasPressed (0 left, 1 middle, 2 right); pick(objects) is the nearest hit under the pointer, or null.
+const pointer = new THREE.Vector2(), _clicks = new Set(), _stepClicks = new Set(), _raycaster = new THREE.Raycaster();
+const wasClicked = (button = 0) => (_inStep ? _stepClicks : _clicks).has(button);
+renderer.domElement.addEventListener('pointermove', event => pointer.set(event.clientX / innerWidth * 2 - 1, -(event.clientY / innerHeight) * 2 + 1));
+renderer.domElement.addEventListener('pointerdown', event => { _clicks.add(event.button); _stepClicks.add(event.button); _unlockSound(); });
+renderer.domElement.addEventListener('contextmenu', event => event.preventDefault());
+document.addEventListener('mousedown', event => { if (event.target.closest('button')) event.preventDefault(); });  // a clicked button must not keep focus for Space
+function pick(objects) {
+  _raycaster.setFromCamera(pointer, camera);
+  return _raycaster.intersectObjects(objects, true)[0] ?? null;
+}
+function pickPlane(y = 0) {
+  _raycaster.setFromCamera(pointer, camera);
+  return _raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), new THREE.Vector3());
+}
+
+// Sound, synthesized so the game stays one file. Browsers allow it only after a key press or click.
+let _audio = null, _muted = saved.get('muted', false);
+function _unlockSound() {
+  try { _audio ??= new AudioContext(); _audio.resume(); } catch {}
+}
+function sound(freq = 440, seconds = 0.1, type = 'square', slideTo = freq, volume = 0.15) {
+  if (_muted || _audio?.state !== 'running') return;
+  const t = _audio.currentTime, osc = _audio.createOscillator(), gain = _audio.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), t + seconds);
+  gain.gain.setValueAtTime(volume, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+  osc.connect(gain).connect(_audio.destination);
+  osc.start(t);
+  osc.stop(t + seconds);
+}
+// Noise for knocks, thuds, explosions and mechanical clicks: lower `tone` sounds duller.
+function noise(seconds = 0.15, volume = 0.2, tone = 2000) {
+  if (_muted || _audio?.state !== 'running') return;
+  const t = _audio.currentTime, buffer = _audio.createBuffer(1, Math.ceil(_audio.sampleRate * seconds), _audio.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  const source = _audio.createBufferSource(), filter = _audio.createBiquadFilter(), gain = _audio.createGain();
+  source.buffer = buffer;
+  filter.type = 'lowpass';
+  filter.frequency.value = tone;
+  gain.gain.setValueAtTime(volume, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+  source.connect(filter).connect(gain).connect(_audio.destination);
+  source.start(t);
+}
+
+const $ = id => document.getElementById(id);
+let state = 'title', score = 0, best = saved.get('best', null), shake = 0;
+let _helpFrom = 'title';
+
+// =============================================================================
+// THE GAME — replace this whole section with your game, keeping its shape:
+//   build()            once, at load: meshes, materials, lights, anything reused
+//   reset()            before every round: put everything back to the start
+//   update(dt)         every fixed step while playing: input, movement, rules
+//   draw(dt, alpha)    optional, every frame in every state: animation and effects that change no rules
+//   resized()          optional, at load and when the window changes: fit the camera
+//   screenInput(code)  optional, keys on the title and end screens; return true to keep a key from starting
+//   score              what the HUD shows; set it as the game goes
+//   random()           use instead of Math.random(), so #seed=1 plays the same round every time
+//   endRound(won, { title, detail })   call when the round is lost (false) or won (true)
+// =============================================================================
+const RINGS = [3.2, 5.0, 6.8, 8.6];
+const CORE_R = 1.3, PLAYER_R = 0.42, COMET_R = 0.36, MINE_R = 0.42, BEAM_HALF = 0.32;
+const BASE_SPEED = 4.2;                 // the player's speed along a ring, in units a second
+const BEAM_WARN = 1.5, BEAM_FIRE = 0.45, MINE_ARM = 1.2, MINE_LIFE = 8, MOTE_LIFE = 9;
+const DARK = PALETTE.mode === 'dark';
+const col = c => new THREE.Color(c);
+const mix = (a, b, t) => col(a).lerp(col(b), t);
+const BG = col(PALETTE.background);
+const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+const polar = (r, a, y, out) => out.set(r * Math.cos(a), y, -r * Math.sin(a));
+const damp = THREE.MathUtils.damp;
+
+let composer = null;
+let player, playerMat, playerHalo, ringMeshes = [], core, coreMat, corona, coronaMat, moon, stars;
+let comets = [], motes = [], mines = [], beams = [];
+let trail, trailHistory = [];
+const TRAIL_N = 40, TAIL_N = 30, PARTICLES = 700;
+let pGeom, pPos, pCol, pVel, pLife, pMaxLife, pBase = [], pNext = 0;
+
+// Round state.
+let elapsed, ring, radius, angle, throttle, phaseT, charges, moteCount, combo, comboT, level;
+let cometTimer, beamTimer, mineTimer, moteTimer, hopSquash, moonT = 0, flareGlow = 0;
+const _v = new THREE.Vector3();
+
+function build() {
+  // A slowly turning field of stars far below the orbits.
+  const starPos = [], starCol = [];
+  for (let i = 0; i < 700; i++) {
+    const r = 6 + Math.sqrt(Math.random()) * 45, a = Math.random() * Math.PI * 2;
+    starPos.push(r * Math.cos(a), -4 - Math.random() * 6, r * Math.sin(a));
+    const c = mix(PALETTE.foreground, PALETTE.background, 0.25 + Math.random() * 0.6);
+    starCol.push(c.r, c.g, c.b);
+  }
+  const starGeom = new THREE.BufferGeometry();
+  starGeom.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+  starGeom.setAttribute('color', new THREE.Float32BufferAttribute(starCol, 3));
+  stars = new THREE.Points(starGeom, new THREE.PointsMaterial({ size: 0.12, vertexColors: true }));
+  scene.add(stars);
+
+  // The orbits.
+  for (const r of RINGS) {
+    const mesh = new THREE.Mesh(new THREE.TorusGeometry(r, 0.045, 8, 160), new THREE.MeshBasicMaterial({ color: PALETTE.muted }));
+    mesh.rotation.x = -Math.PI / 2;
+    scene.add(mesh);
+    ringMeshes.push(mesh);
+  }
+
+  // The star, its corona, and the moon that eclipses it when you fall.
+  coreMat = new THREE.MeshBasicMaterial({ color: PALETTE.yellow });
+  core = new THREE.Mesh(new THREE.SphereGeometry(CORE_R, 48, 32), coreMat);
+  scene.add(core);
+  coronaMat = new THREE.MeshBasicMaterial({ color: PALETTE.orange, transparent: true, opacity: DARK ? 0.28 : 0.35, depthWrite: false });
+  corona = new THREE.Mesh(new THREE.SphereGeometry(CORE_R * 1.35, 32, 24), coronaMat);
+  scene.add(corona);
+  moon = new THREE.Mesh(new THREE.SphereGeometry(CORE_R * 1.05, 48, 32),
+    new THREE.MeshBasicMaterial({ color: DARK ? PALETTE.background : PALETTE.foreground }));
+  moon.visible = false;
+  scene.add(moon);
+
+  // The player: a bright moon with a halo and a trail of light.
+  playerMat = new THREE.MeshStandardMaterial({ color: PALETTE.accent, emissive: PALETTE.accent, emissiveIntensity: DARK ? 1.2 : 0.5, transparent: true });
+  player = new THREE.Mesh(new THREE.SphereGeometry(PLAYER_R, 32, 24), playerMat);
+  playerHalo = new THREE.Mesh(new THREE.TorusGeometry(PLAYER_R * 1.7, 0.05, 8, 48),
+    new THREE.MeshBasicMaterial({ color: PALETTE.accent, transparent: true, opacity: 0.6 }));
+  playerHalo.rotation.x = -Math.PI / 2;
+  player.add(playerHalo);
+  scene.add(player);
+  const trailGeom = new THREE.BufferGeometry();
+  trailGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL_N * 3), 3));
+  const trailCol = new Float32Array(TRAIL_N * 3);
+  for (let i = 0; i < TRAIL_N; i++) mix(PALETTE.accent, PALETTE.background, i / TRAIL_N).toArray(trailCol, i * 3);
+  trailGeom.setAttribute('color', new THREE.BufferAttribute(trailCol, 3));
+  trail = new THREE.Points(trailGeom, new THREE.PointsMaterial({ size: 0.34, vertexColors: true }));
+  scene.add(trail);
+
+  // Comets, with tails that stream behind them along their ring.
+  const cometGeom = new THREE.SphereGeometry(COMET_R, 20, 14);
+  const cometMat = new THREE.MeshStandardMaterial({ color: PALETTE.red, emissive: PALETTE.red, emissiveIntensity: DARK ? 0.75 : 0.4 });
+  const tailMat = new THREE.PointsMaterial({ size: 0.36, vertexColors: true });
+  const tailCol = new Float32Array(TAIL_N * 3);
+  for (let i = 0; i < TAIL_N; i++) mix(PALETTE.red, PALETTE.background, (i + 1) / (TAIL_N + 1)).toArray(tailCol, i * 3);
+  for (let i = 0; i < 30; i++) {
+    const mesh = new THREE.Mesh(cometGeom, cometMat);
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TAIL_N * 3), 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(tailCol, 3));
+    const tail = new THREE.Points(geom, tailMat);
+    mesh.visible = tail.visible = false;
+    scene.add(mesh, tail);
+    comets.push({ mesh, tail, active: false });
+  }
+
+  // Motes of light to gather.
+  const moteGeom = new THREE.OctahedronGeometry(0.3);
+  const moteMat = new THREE.MeshStandardMaterial({ color: PALETTE.green, emissive: PALETTE.green, emissiveIntensity: DARK ? 1.3 : 0.45 });
+  for (let i = 0; i < 6; i++) {
+    const mesh = new THREE.Mesh(moteGeom, moteMat);
+    mesh.visible = false;
+    scene.add(mesh);
+    motes.push({ mesh, active: false });
+  }
+
+  // Mines: a warning ring first, then a spiked crystal.
+  const mineGeom = new THREE.IcosahedronGeometry(MINE_R, 0);
+  const mineMat = new THREE.MeshStandardMaterial({ color: PALETTE.magenta, emissive: PALETTE.magenta, emissiveIntensity: DARK ? 1.1 : 0.4, flatShading: true });
+  const warnGeom = new THREE.TorusGeometry(0.75, 0.05, 8, 40);
+  for (let i = 0; i < 8; i++) {
+    const group = new THREE.Group();
+    const spike = new THREE.Mesh(mineGeom, mineMat);
+    const warn = new THREE.Mesh(warnGeom, new THREE.MeshBasicMaterial({ color: PALETTE.magenta, transparent: true }));
+    warn.rotation.x = -Math.PI / 2;
+    group.add(spike, warn);
+    group.visible = false;
+    scene.add(group);
+    mines.push({ group, spike, warn, active: false });
+  }
+
+  // Flares: a flickering lane that warns, then a beam of fire from the star.
+  const len = RINGS[3] + 1.6 - CORE_R;
+  for (let i = 0; i < 3; i++) {
+    const group = new THREE.Group();
+    const warn = new THREE.Mesh(new THREE.PlaneGeometry(len, BEAM_HALF * 2 + 0.5),
+      new THREE.MeshBasicMaterial({ color: PALETTE.red, transparent: true, depthWrite: false }));
+    warn.rotation.x = -Math.PI / 2;
+    warn.position.set(CORE_R + len / 2, 0.02, 0);
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(len, 0.3, BEAM_HALF * 2),
+      new THREE.MeshBasicMaterial({ color: mix(PALETTE.yellow, PALETTE.red, 0.35) }));
+    beam.position.set(CORE_R + len / 2, 0.5, 0);
+    group.add(warn, beam);
+    group.visible = false;
+    scene.add(group);
+    beams.push({ group, warn, beam, active: false });
+  }
+
+  // One pool of particles for every burst.
+  pGeom = new THREE.BufferGeometry();
+  pPos = new Float32Array(PARTICLES * 3);
+  pCol = new Float32Array(PARTICLES * 3);
+  pVel = new Float32Array(PARTICLES * 3);
+  pLife = new Float32Array(PARTICLES);
+  pMaxLife = new Float32Array(PARTICLES).fill(1);
+  for (let i = 0; i < PARTICLES; i++) { pPos[i * 3 + 1] = -100; pBase.push(new THREE.Color()); }
+  pGeom.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+  pGeom.setAttribute('color', new THREE.BufferAttribute(pCol, 3));
+  const sparks = new THREE.Points(pGeom, new THREE.PointsMaterial({ size: 0.22, vertexColors: true }));
+  sparks.frustumCulled = false;
+  scene.add(sparks);
+
+  if (DARK) {
+    composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.9, 0.55, 0.15));
+    composer.addPass(new OutputPass());
+  }
+}
+
+function resized() {
+  fitCamera(RINGS[3] * 2 + 1.6, RINGS[3] * 2 + 1.6, { tilt: 1.2, margin: 0.98 });
+  if (composer) { composer.setPixelRatio(Math.min(devicePixelRatio, 2)); composer.setSize(innerWidth, innerHeight); }
+}
+
+function burst(pos, color, count, speed = 4, life = 0.8) {
+  const c = col(color);
+  for (let n = 0; n < count; n++) {
+    const i = pNext; pNext = (pNext + 1) % PARTICLES;
+    const a = Math.random() * Math.PI * 2, s = speed * (0.3 + Math.random() * 0.7);
+    pPos[i * 3] = pos.x; pPos[i * 3 + 1] = pos.y; pPos[i * 3 + 2] = pos.z;
+    pVel[i * 3] = Math.cos(a) * s; pVel[i * 3 + 1] = (Math.random() - 0.3) * s * 0.5; pVel[i * 3 + 2] = Math.sin(a) * s;
+    pLife[i] = pMaxLife[i] = life * (0.5 + Math.random() * 0.5);
+    pBase[i].copy(c);
+  }
+}
+
+function banner(text, warn = false) {
+  const el = $('banner');
+  el.textContent = text;
+  el.classList.toggle('warn', warn);
+  el.classList.remove('pop');
+  void el.offsetWidth;
+  el.classList.add('pop');
+}
+
+function reset() {
+  for (const list of [comets, motes, mines, beams]) for (const o of list) o.active = false;
+  for (const c of comets) c.mesh.visible = c.tail.visible = false;
+  for (const m of motes) m.mesh.visible = false;
+  for (const m of mines) m.group.visible = false;
+  for (const b of beams) b.group.visible = false;
+  elapsed = 0; score = 0; level = 1;
+  ring = 1; radius = RINGS[1]; angle = -Math.PI / 2; throttle = 1;
+  phaseT = 0; charges = 1; moteCount = 0; combo = 1; comboT = 0;
+  cometTimer = 3; beamTimer = 22; mineTimer = 40; moteTimer = 0.3; hopSquash = 0;
+  player.visible = trail.visible = true;
+  polar(radius, angle, 0.5, player.position);
+  trailHistory = Array.from({ length: TRAIL_N }, () => player.position.clone());
+}
+
+function spawnComet(r, a, omega) {
+  const c = comets.find(c => !c.active);
+  if (!c) return;
+  Object.assign(c, { active: true, ring: r, angle: a, omega, age: 0, life: Math.PI * 2 * 1.4 / omega, grazed: false });
+  polar(RINGS[r], a, 0.5, c.mesh.position);
+  c.mesh.visible = c.tail.visible = true;
+}
+
+function spawnMote() {
+  const m = motes.find(m => !m.active);
+  if (!m) return;
+  Object.assign(m, { active: true, ring: Math.floor(random() * 4), angle: angle + 0.9 + random() * (Math.PI * 2 - 1.8), age: 0 });
+  polar(RINGS[m.ring], m.angle, 0.5, m.mesh.position);
+  m.mesh.visible = true;
+}
+
+function spawnMine() {
+  const m = mines.find(m => !m.active);
+  if (!m) return;
+  Object.assign(m, { active: true, ring: Math.floor(random() * 4), angle: angle + 1.3 + random() * (Math.PI * 2 - 2.6), age: 0, armed: false });
+  polar(RINGS[m.ring], m.angle, 0.5, m.group.position);
+  m.group.visible = true;
+  sound(220, 0.25, 'sine', 330, 0.05);
+}
+
+function spawnBeam(a) {
+  const b = beams.find(b => !b.active);
+  if (!b) return;
+  Object.assign(b, { active: true, angle: a, age: 0, fired: false });
+  b.group.rotation.y = a;
+  b.group.visible = true;
+  sound(140, BEAM_WARN, 'sawtooth', 420, 0.035);
+}
+
+function die(cause) {
+  burst(player.position, PALETTE.accent, 90, 7, 1.2);
+  burst(player.position, PALETTE.red, 40, 5, 1);
+  shake = 0.8;
+  noise(0.7, 0.35, 700);
+  sound(300, 0.6, 'sawtooth', 40, 0.12);
+  player.visible = false;
+  const t = Math.floor(elapsed);
+  endRound(false, { title: 'ECLIPSED', detail: `${cause} after ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')} · level ${level} · ${moteCount} motes` });
+}
+
+// True when the player is struck (and not phasing).
+function struck(cause) {
+  if (phaseT > 0) return false;
+  die(cause);
+  return true;
+}
+
+function update(dt) {
+  elapsed += dt;
+  score += dt * 10;
+  const lv = Math.floor(elapsed / 15) + 1;
+  if (lv > level) {
+    level = lv;
+    banner(lv === 2 ? 'LEVEL 2 · WALLS' : lv === 3 ? 'LEVEL 3 · FLARES' : lv === 4 ? 'LEVEL 4 · MINES' : `LEVEL ${lv}`);
+    sound(523, 0.12, 'triangle', 784, 0.08);
+    setTimeout(() => sound(784, 0.2, 'triangle', 1046, 0.08), 120);
+  }
+
+  // Input: hop rings, throttle, phase.
+  for (const [action, dir] of [['up', 1], ['down', -1]]) {
+    if (!wasPressed(action)) continue;
+    if (ring + dir >= 0 && ring + dir < RINGS.length) {
+      ring += dir; hopSquash = 1;
+      sound(dir > 0 ? 520 : 660, 0.07, 'triangle', dir > 0 ? 390 : 880, 0.07);
+    } else sound(110, 0.06, 'square', 90, 0.05);
+  }
+  throttle = damp(throttle, isHeld('right') ? 1.75 : isHeld('left') ? 0.45 : 1, 7, dt);
+  if (wasPressed('action')) {
+    if (charges > 0 && phaseT <= 0) {
+      charges--; phaseT = 0.65;
+      sound(900, 0.35, 'sine', 200, 0.1);
+      burst(player.position, PALETTE.cyan, 30, 3, 0.6);
+    } else sound(120, 0.08, 'square', 100, 0.05);
+  }
+
+  radius = damp(radius, RINGS[ring], 16, dt);
+  angle += BASE_SPEED * throttle / radius * dt;
+  polar(radius, angle, 0.5, player.position);
+  phaseT = Math.max(0, phaseT - dt);
+  if ((comboT -= dt) <= 0) combo = 1;
+
+  // Comets: alone at first, then walls with one open ring.
+  if ((cometTimer -= dt) <= 0) {
+    cometTimer = Math.max(0.75, 2.4 - elapsed * 0.022) * (0.8 + random() * 0.4);
+    const omega = 0.5 + Math.min(0.6, elapsed * 0.007) + random() * 0.15;
+    const a = angle + Math.PI + (random() - 0.5) * 0.9;
+    if (elapsed > 15 && random() < Math.min(0.45, 0.12 + elapsed * 0.004)) {
+      const open = Math.floor(random() * 4);
+      for (let r = 0; r < 4; r++) if (r !== open) spawnComet(r, a, omega);
+      cometTimer += 1.3;
+    } else {
+      let r = Math.floor(random() * 4);
+      if (elapsed < 10 && r === ring) r = (r + 1 + Math.floor(random() * 3)) % 4;   // an easy start
+      spawnComet(r, a, omega);
+    }
+  }
+  for (const c of comets) {
+    if (!c.active) continue;
+    c.angle -= c.omega * dt; c.age += dt;
+    polar(RINGS[c.ring], c.angle, 0.5, c.mesh.position);
+    if (c.age > c.life) { c.active = false; c.mesh.visible = c.tail.visible = false; burst(c.mesh.position, PALETTE.red, 10, 2, 0.5); continue; }
+    if (c.age < 0.4) continue;                   // fading in, harmless
+    const d = c.mesh.position.distanceTo(player.position);
+    if (d < PLAYER_R + COMET_R && struck('Struck by a comet')) return;
+    if (d < 1.55 && !c.grazed && phaseT <= 0 && player.visible) {
+      c.grazed = true; score += 25 * combo;
+      sound(1400, 0.05, 'sine', 1800, 0.05);
+      burst(player.position, PALETTE.yellow, 6, 2, 0.4);
+    }
+  }
+
+  // Motes of light.
+  if (motes.filter(m => m.active).length < 3 && (moteTimer -= dt) <= 0) { moteTimer = 0.8; spawnMote(); }
+  for (const m of motes) {
+    if (!m.active) continue;
+    m.age += dt;
+    if (m.age > MOTE_LIFE) { m.active = false; m.mesh.visible = false; burst(m.mesh.position, PALETTE.green, 8, 1.5, 0.4); continue; }
+    if (m.mesh.position.distanceTo(player.position) < PLAYER_R + 0.45) {
+      m.active = false; m.mesh.visible = false;
+      combo = comboT > 0 ? Math.min(8, combo + 1) : 1; comboT = 4;
+      score += 50 * combo; moteCount++;
+      burst(m.mesh.position, PALETTE.green, 24, 3.5, 0.7);
+      sound(660 + combo * 90, 0.1, 'triangle', 990 + combo * 120, 0.09);
+      $('score').classList.remove('bump'); void $('score').offsetWidth; $('score').classList.add('bump');
+      if (moteCount % 4 === 0 && charges < 3) { charges++; banner('PHASE CHARGED'); sound(880, 0.25, 'sine', 1760, 0.07); }
+    }
+  }
+
+  // Mines from level 4.
+  if (elapsed > 45 && (mineTimer -= dt) <= 0) {
+    mineTimer = Math.max(2.8, 7 - (elapsed - 45) * 0.04);
+    spawnMine();
+  }
+  for (const m of mines) {
+    if (!m.active) continue;
+    m.age += dt;
+    if (!m.armed && m.age > MINE_ARM) { m.armed = true; noise(0.12, 0.12, 1500); }
+    if (m.age > MINE_LIFE) { m.active = false; m.group.visible = false; burst(m.group.position, PALETTE.magenta, 16, 2.5, 0.6); continue; }
+    if (m.armed && m.group.position.distanceTo(player.position) < PLAYER_R + MINE_R && struck('Shattered on a mine')) return;
+  }
+
+  // Flares from level 3: aimed where you will be when they fire.
+  if (elapsed > 30 && (beamTimer -= dt) <= 0) {
+    beamTimer = Math.max(3, 8 - (elapsed - 30) * 0.05);
+    const ahead = angle + BASE_SPEED * throttle / RINGS[ring] * BEAM_WARN + (random() - 0.5) * 0.25;
+    spawnBeam(ahead);
+    if (elapsed > 75) spawnBeam(ahead + Math.PI * (0.6 + random() * 0.8));
+    if (level === 3 && elapsed < 32) banner('FLARE', true);
+  }
+  for (const b of beams) {
+    if (!b.active) continue;
+    b.age += dt;
+    if (!b.fired && b.age > BEAM_WARN) {
+      b.fired = true; shake = Math.max(shake, 0.25); flareGlow = 1;
+      noise(0.5, 0.25, 900);
+      polar(CORE_R + 1, b.angle, 0.5, _v);
+      burst(_v, PALETTE.yellow, 20, 5, 0.6);
+    }
+    if (b.age > BEAM_WARN + BEAM_FIRE) { b.active = false; b.group.visible = false; continue; }
+    if (b.fired) {
+      const d = wrap(angle - b.angle);
+      if (Math.cos(d) > 0 && radius * Math.abs(Math.sin(d)) < BEAM_HALF + PLAYER_R && struck('Burned by a flare')) return;
+    }
+  }
+}
+
+let _hudCombo = '', _hudCharges = '', _hudLevel = '';
+function draw(dt) {
+  const moving = state !== 'paused';
+  const t = performance.now() / 1000;
+
+  // The star pulses, and reddens while a flare gathers.
+  const warning = beams.reduce((w, b) => b.active && !b.fired ? Math.max(w, b.age / BEAM_WARN) : w, 0);
+  flareGlow = Math.max(0, flareGlow - dt * 2.5);
+  coreMat.color.set(PALETTE.yellow).lerp(col(PALETTE.red), Math.min(1, warning * 0.8 + flareGlow * 0.5));
+  core.scale.setScalar(1 + Math.sin(t * 2.2) * 0.03 + flareGlow * 0.12);
+  corona.scale.setScalar(1 + Math.sin(t * 1.3) * 0.08 + warning * 0.25 + flareGlow * 0.3);
+  coronaMat.color.set(PALETTE.orange).lerp(col(PALETTE.red), warning);
+  stars.rotation.y += dt * 0.01;
+
+  // When you fall, the moon slides over the star.
+  moonT = damp(moonT, state === 'over' ? 1 : 0, 2.5, dt);
+  moon.visible = moonT > 0.01;
+  moon.position.set(THREE.MathUtils.lerp(-16, 0.25, moonT), 2.2, THREE.MathUtils.lerp(-5, 0.15, moonT));
+
+  // The rings: yours glows.
+  ringMeshes.forEach((mesh, i) => {
+    mesh.material.color.lerp(i === ring && state === 'playing' ? mix(PALETTE.accent, PALETTE.muted, 0.35) : col(PALETTE.muted), 1 - Math.exp(-10 * dt));
+  });
+
+  // The player: squash on a hop, ghostly while phasing.
+  hopSquash = Math.max(0, hopSquash - dt * 5);
+  const sq = Math.sin(hopSquash * Math.PI) * 0.3;
+  player.scale.set(1 + sq, 1 - sq * 0.5, 1 + sq);
+  playerMat.opacity = phaseT > 0 ? 0.3 + 0.2 * Math.sin(t * 40) : 1;
+  playerHalo.scale.setScalar(phaseT > 0 ? 1.6 : 1 + Math.sin(t * 4) * 0.08);
+  playerHalo.material.color.set(phaseT > 0 ? PALETTE.cyan : PALETTE.accent);
+  if (moving && state === 'playing') {
+    trailHistory.pop();
+    trailHistory.unshift(player.position.clone());
+  }
+  const tp = trail.geometry.attributes.position;
+  trailHistory.forEach((p, i) => tp.setXYZ(i, p.x, p.y, p.z));
+  tp.needsUpdate = true;
+  trail.visible = player.visible;
+
+  // Comets: grow in, tail streaming behind along the ring.
+  for (const c of comets) {
+    if (!c.active) continue;
+    const fadeOut = Math.min(1, (c.life - c.age) / 0.5);
+    c.mesh.scale.setScalar(Math.min(1, c.age / 0.4) * fadeOut * (1 + Math.sin(t * 20 + c.angle) * 0.08));
+    const tail = c.tail.geometry.attributes.position, r = RINGS[c.ring];
+    for (let i = 0; i < TAIL_N; i++) {
+      polar(r + Math.sin(t * 9 + i * 1.7) * 0.05 * i / TAIL_N, c.angle + (i + 1) * 0.028 * Math.min(1, c.age / 0.4), 0.5, _v);
+      tail.setXYZ(i, _v.x, _v.y, _v.z);
+    }
+    tail.needsUpdate = true;
+  }
+
+  for (const m of motes) {
+    if (!m.active) continue;
+    m.mesh.rotation.y += dt * 3;
+    m.mesh.rotation.x += dt * 1.3;
+    m.mesh.position.y = 0.5 + Math.sin(t * 4 + m.angle) * 0.12;
+    const s = Math.min(1, m.age / 0.3);
+    m.mesh.scale.setScalar(s);
+    m.mesh.visible = MOTE_LIFE - m.age > 2 || Math.sin(t * 25) > 0;   // blinks before it fades
+  }
+
+  for (const m of mines) {
+    if (!m.active) continue;
+    if (moving) m.spike.rotation.y += dt * 2;
+    const grow = m.armed ? Math.min(1, (m.age - MINE_ARM) / 0.2) : 0;
+    m.spike.scale.setScalar(m.armed ? grow * (1 + Math.sin(t * 8) * 0.08) : 0.25);
+    m.warn.material.opacity = m.armed ? 0.25 : 0.4 + 0.5 * Math.abs(Math.sin(t * 12));
+    m.warn.scale.setScalar(m.armed ? 1 : 1.6 - m.age / MINE_ARM * 0.6);
+  }
+
+  for (const b of beams) {
+    if (!b.active) continue;
+    const p = Math.min(1, b.age / BEAM_WARN);
+    b.warn.material.opacity = b.fired ? 0.15 : (0.08 + 0.3 * p) * (0.6 + 0.4 * Math.sin(t * (10 + p * 30)));
+    b.beam.visible = b.fired;
+    if (b.fired) b.beam.scale.set(1, 1, 1 + Math.sin(t * 50) * 0.15);
+  }
+
+  // Sparks drift, slow and fade toward the sky.
+  if (moving) {
+    for (let i = 0; i < PARTICLES; i++) {
+      if (pLife[i] <= 0) continue;
+      pLife[i] -= dt;
+      if (pLife[i] <= 0) { pPos[i * 3 + 1] = -100; continue; }
+      const drag = Math.exp(-2.5 * dt);
+      for (let k = 0; k < 3; k++) { pVel[i * 3 + k] *= drag; pPos[i * 3 + k] += pVel[i * 3 + k] * dt; }
+      const f = 1 - pLife[i] / pMaxLife[i], c = pBase[i];
+      pCol[i * 3] = c.r + (BG.r - c.r) * f; pCol[i * 3 + 1] = c.g + (BG.g - c.g) * f; pCol[i * 3 + 2] = c.b + (BG.b - c.b) * f;
+    }
+    pGeom.attributes.position.needsUpdate = true;
+    pGeom.attributes.color.needsUpdate = true;
+  }
+
+  // HUD.
+  const comboText = combo > 1 ? `x${combo}` : '';
+  if (comboText !== _hudCombo) $('combo').textContent = _hudCombo = comboText;
+  const chargeText = String(charges);
+  if (chargeText !== _hudCharges) {
+    _hudCharges = chargeText;
+    $('charges').innerHTML = [0, 1, 2].map(i => `<span class="pip${i < charges ? ' on' : ''}"></span>`).join('');
+  }
+  const levelText = `LV ${level}`;
+  if (levelText !== _hudLevel) $('level').textContent = _hudLevel = levelText;
+}
+
+// =============================================================================
+// THE FRAME, PART TWO: screens, rounds and the loop. Keep it.
+// =============================================================================
+$('best').textContent = best === null ? '—' : formatScore(best);
+
+function show(next) {
+  state = next;
+  for (const id of ['title', 'paused', 'over', 'help']) $(id).classList.toggle('show', id === next || (id === 'over' && next === 'won'));
+}
+
+function startRound() {
+  reset();
+  _stepPressed.clear();               // the key that started the round is not its first move
+  _stepClicks.clear();
+  show('playing');
+  sound(440, 0.12, 'square', 880);
+}
+
+function endRound(won, { title, detail } = {}) {
+  if (state !== 'playing') return;
+  const isBest = BEST_IS === 'lower' ? won && (best === null || score < best) : best === null || score > best;
+  if (isBest) { best = score; saved.set('best', best); $('best').textContent = formatScore(best); }
+  $('over-title').textContent = title ?? (won ? 'YOU WIN' : 'GAME OVER');
+  $('over-detail').textContent = detail ?? `Score ${formatScore(score)}`;
+  $('over-best').textContent = isBest ? 'New best!' : '';
+  show(won ? 'won' : 'over');
+}
+
+for (const line of document.querySelectorAll('.leave')) line.hidden = history.length <= 1;
+
+// The loop: keys → fixed-step simulation → draw → render. Game rules never run in draw.
+const STEP = 1 / 120, _clock = new THREE.Clock();
+let _accumulator = 0;
+
+function frame() {
+  const dt = Math.min(_clock.getDelta(), 0.1);       // a hidden window must not leap ahead
+
+  if (wasPressed('mute')) { _muted = !_muted; saved.set('muted', _muted); }
+  if (state === 'help') {
+    if (_pressed.size) show(_helpFrom);
+  } else if (wasPressed('help') && state !== 'playing') {
+    _helpFrom = state;
+    show('help');
+  } else if ((state === 'title' || state === 'over' || state === 'won') && wasPressed('pause') && history.length > 1) {
+    history.back();                                      // back to Game Vibes, which opened the game
+  } else if (state === 'title' || state === 'over' || state === 'won') {
+    const kept = typeof screenInput === 'function' && [..._pressed].some(code => screenInput(code));
+    if (!kept && (wasPressed('action') || wasClicked(0))) startRound();
+  } else if (state === 'paused') {
+    if (wasPressed('pause')) show('playing');
+    else if (wasPressed('leave') && history.length > 1) history.back();   // back to Game Vibes, mid-round
+  } else if (wasPressed('pause')) {
+    show('paused');
+  } else {
+    _accumulator += dt;
+    for (let steps = 0; _accumulator >= STEP && steps < 12 && state === 'playing'; steps++) {
+      _inStep = true;
+      update(STEP);
+      _inStep = false;
+      _stepPressed.clear();
+      _stepClicks.clear();
+      _accumulator -= STEP;
+    }
+  }
+  if (state !== 'playing') { _accumulator = 0; _stepPressed.clear(); _stepClicks.clear(); }
+  _pressed.clear();
+  _clicks.clear();
+
+  if (typeof draw === 'function') draw(dt, _accumulator / STEP);
+  $('score').textContent = formatScore(score);
+  shake = Math.max(0, shake - dt);
+  const shakeX = (Math.random() - 0.5) * shake, shakeY = (Math.random() - 0.5) * shake;
+  camera.position.x += shakeX;
+  camera.position.y += shakeY;
+  if (composer) composer.render(); else renderer.render(scene, camera);
+  camera.position.x -= shakeX;
+  camera.position.y -= shakeY;
+}
+
+build();
+if (typeof resized === 'function') resized();
+reset();
+renderer.setAnimationLoop(frame);
+</script>
+</body>
+</html>
