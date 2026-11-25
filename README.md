@@ -18,7 +18,7 @@ Then launch **Game Vibes** from the app launcher (<kbd>Super</kbd> + <kbd>Space<
 
 ### Without Omarchy
 
-It's a single self-contained `index.html` that loads three.js from a CDN, so any modern browser with WebGL can run it:
+It's a single `index.html`. In Game Vibes it uses the local copy of three.js, so it plays offline; anywhere else it fetches three.js from a CDN, so any modern browser with WebGL can run it:
 
 ```bash
 git clone https://github.com/DeV-433/omarchy-eclipse-game
